@@ -32,7 +32,7 @@ The invoice should contain the following fields:
 
 * **Send an email notification** to the customer using the `NotificationFacade`. 
   * The email's subject and message may be hardcoded or customized as needed. 
-  * Change the **Invoice Status** to `sending` after sending the notification.
+  * Change the **Invoice Status** to `sending` when the invoice is sent.
 
 ### Delivery:
 
