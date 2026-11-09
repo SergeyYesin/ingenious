@@ -1,0 +1,104 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\Invoice\Application;
+
+use Mockery\MockInterface;
+use Modules\Invoices\Application\Jobs\SendInvoiceNotificationJob;
+use Modules\Invoices\Domain\Enums\StatusEnum;
+use Modules\Invoices\Infrastructure\Persistence\Models\InvoiceModel;
+use Modules\Notifications\Api\Data\NotifyData;
+use Modules\Notifications\Api\NotificationFacadeInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
+use Ramsey\Uuid\Uuid;
+use RuntimeException;
+use Tests\TestCase;
+
+final class SendInvoiceNotificationJobTest extends TestCase
+{
+    public function test_handle_notifies_customer_of_sending_invoice(): void
+    {
+        $invoice = InvoiceModel::factory()->sending()->withProductLines()->create();
+
+        $this->mock(NotificationFacadeInterface::class, static function (MockInterface $mock) use ($invoice): void {
+            $mock->shouldReceive('notify')
+                ->once()
+                ->withArgs(static fn (NotifyData $data): bool => $data->resourceId->toString() === $invoice->id
+                    && $data->toEmail === $invoice->customer_email);
+        });
+
+        $this->handle($invoice->id);
+
+        $this->assertStatus($invoice, StatusEnum::Sending);
+    }
+
+    #[DataProvider('notSendingStatuses')]
+    public function test_handle_skips_invoice_not_in_sending(StatusEnum $status): void
+    {
+        $invoice = InvoiceModel::factory()->state(['status' => $status->value])->withProductLines()->create();
+
+        $this->mock(NotificationFacadeInterface::class)->shouldNotReceive('notify');
+
+        $this->handle($invoice->id);
+
+        $this->assertStatus($invoice, $status);
+    }
+
+    public static function notSendingStatuses(): iterable
+    {
+        yield 'draft' => [StatusEnum::Draft];
+        yield 'sent to client' => [StatusEnum::SentToClient];
+    }
+
+    public function test_handle_skips_unknown_invoice(): void
+    {
+        $this->mock(NotificationFacadeInterface::class)->shouldNotReceive('notify');
+
+        $this->handle(Uuid::uuid4()->toString());
+    }
+
+    public function test_handle_lets_notification_errors_bubble_up_for_retry(): void
+    {
+        $invoice = InvoiceModel::factory()->sending()->withProductLines()->create();
+
+        $this->mock(NotificationFacadeInterface::class, static function (MockInterface $mock): void {
+            $mock->shouldReceive('notify')->once()->andThrow(new RuntimeException('Mail server down'));
+        });
+
+        try {
+            $this->handle($invoice->id);
+            self::fail('Expected RuntimeException');
+        } catch (RuntimeException) {
+            $this->assertStatus($invoice, StatusEnum::Sending);
+        }
+    }
+
+    public function test_failed_returns_sending_invoice_to_draft(): void
+    {
+        $invoice = InvoiceModel::factory()->sending()->withProductLines()->create();
+
+        new SendInvoiceNotificationJob($invoice->id)->failed(new RuntimeException('Mail server down'));
+
+        $this->assertStatus($invoice, StatusEnum::Draft);
+    }
+
+    public function test_failed_keeps_delivered_invoice_delivered(): void
+    {
+        $invoice = InvoiceModel::factory()->sentToClient()->withProductLines()->create();
+
+        new SendInvoiceNotificationJob($invoice->id)->failed(new RuntimeException('Timeout'));
+
+        $this->assertStatus($invoice, StatusEnum::SentToClient);
+    }
+
+    private function handle(string $invoiceId): void
+    {
+        $this->app->call([new SendInvoiceNotificationJob($invoiceId), 'handle']);
+    }
+
+    private function assertStatus(InvoiceModel $invoice, StatusEnum $status): void
+    {
+        $this->assertDatabaseHas('invoices', ['id' => $invoice->id, 'status' => $status->value]);
+    }
+}
