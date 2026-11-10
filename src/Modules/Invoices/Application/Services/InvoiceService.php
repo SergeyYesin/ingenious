@@ -4,19 +4,22 @@ declare(strict_types=1);
 
 namespace Modules\Invoices\Application\Services;
 
-use Illuminate\Contracts\Bus\Dispatcher;
+use Closure;
+use Modules\Invoices\Application\Contracts\InvoiceNotifierInterface;
 use Modules\Invoices\Application\Data\CreateInvoiceData;
 use Modules\Invoices\Application\Data\ProductLineData;
-use Modules\Invoices\Application\Exceptions\InvoiceNotificationFailedException;
-use Modules\Invoices\Application\Jobs\SendInvoiceNotificationJob;
 use Modules\Invoices\Domain\Entities\Invoice;
 use Modules\Invoices\Domain\Entities\ProductLine;
-use Modules\Invoices\Domain\Enums\StatusEnum;
+use Modules\Invoices\Domain\Exceptions\ConcurrentModificationException;
 use Modules\Invoices\Domain\Exceptions\InvalidStatusTransitionException;
 use Modules\Invoices\Domain\Exceptions\InvoiceNotFoundException;
+use Modules\Invoices\Domain\Exceptions\InvoiceNotSendingException;
 use Modules\Invoices\Domain\Repositories\InvoiceRepositoryInterface;
-use Modules\Notifications\Api\Data\NotifyData;
-use Modules\Notifications\Api\NotificationFacadeInterface;
+use Modules\Invoices\Domain\ValueObjects\CustomerName;
+use Modules\Invoices\Domain\ValueObjects\Email;
+use Modules\Invoices\Domain\ValueObjects\Money;
+use Modules\Invoices\Domain\ValueObjects\ProductName;
+use Modules\Invoices\Domain\ValueObjects\Quantity;
 use Psr\Log\LoggerInterface;
 use Ramsey\Uuid\Uuid;
 use Ramsey\Uuid\UuidInterface;
@@ -26,100 +29,75 @@ final readonly class InvoiceService
 {
     public function __construct(
         private InvoiceRepositoryInterface $invoices,
-        private NotificationFacadeInterface $notifications,
-        private Dispatcher $bus,
+        private InvoiceNotifierInterface $notifier,
         private LoggerInterface $logger,
     ) {}
 
-    public function create(CreateInvoiceData $data): Invoice
+    public function create(CreateInvoiceData $data): UuidInterface
     {
         $invoice = Invoice::create(
             Uuid::uuid4(),
-            $data->customerName,
-            $data->customerEmail,
+            new CustomerName($data->customerName),
+            new Email($data->customerEmail),
             ...array_map(
                 static fn (ProductLineData $line): ProductLine => new ProductLine(
                     id: Uuid::uuid7(),
-                    name: $line->name,
-                    quantity: $line->quantity,
-                    unitPrice: $line->unitPrice,
+                    name: new ProductName($line->name),
+                    quantity: new Quantity($line->quantity),
+                    unitPrice: new Money($line->unitPrice),
                 ),
                 $data->productLines,
             ),
         );
 
-        $this->invoices->add($invoice);
+        $this->invoices->save($invoice);
 
-        return $invoice;
+        return $invoice->id;
     }
 
-    public function get(UuidInterface $id): Invoice
+    public function send(UuidInterface $id): void
     {
-        return $this->invoices->find($id) ?? throw new InvoiceNotFoundException($id);
-    }
-
-    public function send(UuidInterface $id): Invoice
-    {
-        $invoice = $this->get($id);
+        $invoice = $this->invoices->find($id) ?? throw new InvoiceNotFoundException($id);
 
         $invoice->send();
-        $this->invoices->saveStatus($invoice, StatusEnum::Draft);
 
-        try {
-            $this->bus->dispatch(new SendInvoiceNotificationJob($invoice->id->toString()));
-        } catch (Throwable $exception) {
-            $this->revertToDraft($invoice, $exception);
-
-            throw new InvoiceNotificationFailedException($invoice->id, $exception);
-        }
-
-        return $invoice;
+        $this->invoices->save($invoice);
     }
 
     public function notifyCustomer(UuidInterface $id): void
     {
-        $invoice = $this->invoices->find($id);
-
-        if ($invoice?->status !== StatusEnum::Sending) {
-            $this->logger->info(
-                'Invoice notification skipped for invoice not in sending status',
-                [
-                    'invoice_id' => $id->toString(),
-                    'status' => $invoice?->status->value,
-                ]
-            );
+        try {
+            $notification = $this->invoices->find($id)?->notification();
+        } catch (InvoiceNotSendingException $exception) {
+            $this->logger->info('Invoice notification skipped', [
+                'invoice_id' => $id->toString(),
+                'reason' => $exception->getMessage(),
+            ]);
 
             return;
         }
 
-        $this->notifications->notify(new NotifyData(
-            resourceId: $invoice->id,
-            toEmail: $invoice->customerEmail,
-            subject: "Invoice {$invoice->id->toString()}",
-            message: "Hello {$invoice->customerName}, your invoice total is {$invoice->totalPrice}.",
-        ));
+        if ($notification !== null) {
+            $this->notifier->notify($notification);
+        }
     }
 
     public function abandonSending(UuidInterface $id, ?Throwable $reason): void
     {
-        $invoice = $this->invoices->find($id);
+        $this->logger->error('Invoice notification failed, returning invoice to draft', [
+            'invoice_id' => $id->toString(),
+            'exception' => $reason,
+        ]);
 
-        if ($invoice?->status !== StatusEnum::Sending) {
-            $this->logger->info(
-                'Invoice notification failure ignored for invoice not in sending status',
-                [
-                    'invoice_id' => $id->toString(),
-                    'status' => $invoice?->status->value,
-                ]
-            );
-
-            return;
-        }
-
-        $this->revertToDraft($invoice, $reason);
+        $this->changeStatus($id, static fn (Invoice $invoice) => $invoice->cancelSending());
     }
 
     public function markDelivered(UuidInterface $id): void
+    {
+        $this->changeStatus($id, static fn (Invoice $invoice) => $invoice->markDelivered());
+    }
+
+    private function changeStatus(UuidInterface $id, Closure $change): void
     {
         $invoice = $this->invoices->find($id);
 
@@ -127,53 +105,14 @@ final readonly class InvoiceService
             return;
         }
 
-        if ($invoice->status !== StatusEnum::Sending) {
-            $this->logger->info(
-                'Delivery webhook ignored for invoice not in sending status',
-                [
-                    'invoice_id' => $id->toString(),
-                    'status' => $invoice->status->value,
-                ]
-            );
-
-            return;
-        }
-
-        $invoice->markDelivered();
-
         try {
-            $this->invoices->saveStatus($invoice, StatusEnum::Sending);
-        } catch (InvalidStatusTransitionException) {
-            $this->logger->info(
-                'Delivery webhook lost a race with another status change',
-                [
-                    'invoice_id' => $id->toString(),
-                ]
-            );
-        }
-    }
-
-    private function revertToDraft(Invoice $invoice, ?Throwable $reason): void
-    {
-        $this->logger->error(
-            'Invoice notification failed, returning invoice to draft',
-            [
-                'invoice_id' => $invoice->id->toString(),
-                'exception' => $reason,
-            ]
-        );
-
-        $invoice->cancelSending();
-
-        try {
-            $this->invoices->saveStatus($invoice, StatusEnum::Sending);
-        } catch (InvalidStatusTransitionException) {
-            $this->logger->info(
-                'Invoice status changed while returning it to draft, keeping the newer status',
-                [
-                    'invoice_id' => $invoice->id->toString(),
-                ]
-            );
+            $change($invoice);
+            $this->invoices->save($invoice);
+        } catch (InvalidStatusTransitionException|ConcurrentModificationException $exception) {
+            $this->logger->info('Invoice status change skipped', [
+                'invoice_id' => $id->toString(),
+                'reason' => $exception->getMessage(),
+            ]);
         }
     }
 }

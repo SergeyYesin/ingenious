@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Invoices\Presentation\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
+use Modules\Invoices\Application\Queries\InvoiceQueryService;
 use Modules\Invoices\Application\Services\InvoiceService;
 use Modules\Invoices\Presentation\Http\Requests\CreateInvoiceRequest;
 use Modules\Invoices\Presentation\Http\Resources\InvoiceResource;
@@ -14,12 +15,15 @@ final readonly class CreateInvoiceController
 {
     public function __construct(
         private InvoiceService $invoiceService,
+        private InvoiceQueryService $invoiceQueries,
     ) {}
 
     public function __invoke(CreateInvoiceRequest $request): JsonResponse
     {
-        $invoice = $this->invoiceService->create($request->toData());
+        $id = $this->invoiceService->create($request->toData());
 
-        return new InvoiceResource($invoice)->response()->setStatusCode(Response::HTTP_CREATED);
+        return new InvoiceResource($this->invoiceQueries->get($id))
+            ->response()
+            ->setStatusCode(Response::HTTP_CREATED);
     }
 }

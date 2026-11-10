@@ -6,13 +6,13 @@ namespace Modules\Invoices\Presentation\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Modules\Invoices\Domain\Entities\Invoice;
-use Modules\Invoices\Domain\Entities\ProductLine;
+use Modules\Invoices\Application\Queries\Views\InvoiceView;
+use Modules\Invoices\Application\Queries\Views\ProductLineView;
 
 final class InvoiceResource extends JsonResource
 {
     public function __construct(
-        private readonly Invoice $invoice,
+        private readonly InvoiceView $invoice,
     ) {
         parent::__construct($invoice);
     }
@@ -20,17 +20,17 @@ final class InvoiceResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            'id' => $this->invoice->id->toString(),
-            'status' => $this->invoice->status->value,
+            'id' => $this->invoice->id,
+            'status' => $this->invoice->status,
             'customer_name' => $this->invoice->customerName,
             'customer_email' => $this->invoice->customerEmail,
             'product_lines' => array_map(
-                fn (ProductLine $line): array => [
-                    'id' => $line->id->toString(),
+                static fn (ProductLineView $line): array => [
+                    'id' => $line->id,
                     'name' => $line->name,
                     'quantity' => $line->quantity,
                     'unit_price' => $line->unitPrice,
-                    'total_unit_price' => $line->totalUnitPrice(),
+                    'total_unit_price' => $line->totalUnitPrice,
                 ],
                 $this->invoice->productLines,
             ),

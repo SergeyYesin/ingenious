@@ -5,49 +5,43 @@ declare(strict_types=1);
 namespace Modules\Invoices\Domain\Entities;
 
 use Modules\Invoices\Domain\Enums\StatusEnum;
+use Modules\Invoices\Domain\Events\InvoiceSendingStarted;
 use Modules\Invoices\Domain\Exceptions\InvalidInvoiceException;
 use Modules\Invoices\Domain\Exceptions\InvalidStatusTransitionException;
+use Modules\Invoices\Domain\Exceptions\InvoiceNotSendingException;
+use Modules\Invoices\Domain\ValueObjects\CustomerName;
+use Modules\Invoices\Domain\ValueObjects\Email;
+use Modules\Invoices\Domain\ValueObjects\InvoiceNotification;
+use Modules\Invoices\Domain\ValueObjects\Money;
 use Ramsey\Uuid\UuidInterface;
 
 final class Invoice
 {
     public readonly array $productLines;
 
-    public readonly int $totalPrice;
+    public readonly Money $totalPrice;
+
+    private array $recordedEvents = [];
 
     private function __construct(
         public readonly UuidInterface $id,
-        public readonly string $customerName,
-        public readonly string $customerEmail,
+        public readonly CustomerName $customerName,
+        public readonly Email $customerEmail,
         public private(set) StatusEnum $status,
         ProductLine ...$productLines,
     ) {
-        if (trim($customerName) === '') {
-            throw new InvalidInvoiceException('Customer name must not be empty.');
-        }
-
-        if (filter_var($customerEmail, FILTER_VALIDATE_EMAIL) === false) {
-            throw new InvalidInvoiceException("Customer email {$customerEmail} is not a valid email address.");
-        }
-
-        $totalPrice = 0;
-
-        foreach ($productLines as $line) {
-            $totalPrice += $line->totalUnitPrice();
-
-            if (! is_int($totalPrice)) {
-                throw new InvalidInvoiceException('Invoice total exceeds the supported maximum.');
-            }
-        }
-
         $this->productLines = $productLines;
-        $this->totalPrice = $totalPrice;
+        $this->totalPrice = array_reduce(
+            $productLines,
+            static fn (Money $total, ProductLine $line): Money => $total->add($line->totalUnitPrice),
+            Money::zero(),
+        );
     }
 
     public static function create(
         UuidInterface $id,
-        string $customerName,
-        string $customerEmail,
+        CustomerName $customerName,
+        Email $customerEmail,
         ProductLine ...$productLines,
     ): self {
         return new self($id, $customerName, $customerEmail, StatusEnum::Draft, ...$productLines);
@@ -55,8 +49,8 @@ final class Invoice
 
     public static function reconstitute(
         UuidInterface $id,
-        string $customerName,
-        string $customerEmail,
+        CustomerName $customerName,
+        Email $customerEmail,
         StatusEnum $status,
         ProductLine ...$productLines,
     ): self {
@@ -78,6 +72,7 @@ final class Invoice
         }
 
         $this->status = StatusEnum::Sending;
+        $this->recordedEvents[] = new InvoiceSendingStarted($this->id);
     }
 
     public function cancelSending(): void
@@ -92,6 +87,30 @@ final class Invoice
         $this->assertStatus(StatusEnum::Sending, StatusEnum::SentToClient);
 
         $this->status = StatusEnum::SentToClient;
+    }
+
+    public function notification(): InvoiceNotification
+    {
+        if ($this->status !== StatusEnum::Sending) {
+            throw new InvoiceNotSendingException($this->id, $this->status);
+        }
+
+        return new InvoiceNotification(
+            invoiceId: $this->id,
+            recipient: $this->customerEmail,
+            subject: "Invoice {$this->id->toString()}",
+            message: "Hello {$this->customerName->value}, your invoice total is {$this->totalPrice->amount}.",
+        );
+    }
+
+    public function recordedEvents(): array
+    {
+        return $this->recordedEvents;
+    }
+
+    public function clearRecordedEvents(): void
+    {
+        $this->recordedEvents = [];
     }
 
     private function assertStatus(StatusEnum $required, StatusEnum $target): void

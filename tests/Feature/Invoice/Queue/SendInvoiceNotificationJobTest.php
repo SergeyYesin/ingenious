@@ -2,34 +2,40 @@
 
 declare(strict_types=1);
 
-namespace Tests\Feature\Invoice\Application;
+namespace Tests\Feature\Invoice\Queue;
 
-use Mockery\MockInterface;
-use Modules\Invoices\Application\Jobs\SendInvoiceNotificationJob;
 use Modules\Invoices\Domain\Enums\StatusEnum;
 use Modules\Invoices\Infrastructure\Persistence\Models\InvoiceModel;
-use Modules\Notifications\Api\Data\NotifyData;
-use Modules\Notifications\Api\NotificationFacadeInterface;
+use Modules\Invoices\Infrastructure\Queue\SendInvoiceNotificationJob;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Ramsey\Uuid\Uuid;
 use RuntimeException;
+use Tests\Support\Invoices\FakesInvoiceNotifier;
+use Tests\Support\Invoices\RecordingInvoiceNotifier;
 use Tests\TestCase;
 
 final class SendInvoiceNotificationJobTest extends TestCase
 {
+    use FakesInvoiceNotifier;
+
+    private RecordingInvoiceNotifier $notifier;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->notifier = $this->fakeInvoiceNotifier();
+    }
+
     public function test_handle_notifies_customer_of_sending_invoice(): void
     {
         $invoice = InvoiceModel::factory()->sending()->withProductLines()->create();
 
-        $this->mock(NotificationFacadeInterface::class, static function (MockInterface $mock) use ($invoice): void {
-            $mock->shouldReceive('notify')
-                ->once()
-                ->withArgs(static fn (NotifyData $data): bool => $data->resourceId->toString() === $invoice->id
-                    && $data->toEmail === $invoice->customer_email);
-        });
-
         $this->handle($invoice->id);
 
+        self::assertCount(1, $this->notifier->sent);
+        self::assertSame($invoice->id, $this->notifier->sent[0]->invoiceId->toString());
+        self::assertSame($invoice->customer_email, $this->notifier->sent[0]->recipient->value);
         $this->assertStatus($invoice, StatusEnum::Sending);
     }
 
@@ -38,10 +44,9 @@ final class SendInvoiceNotificationJobTest extends TestCase
     {
         $invoice = InvoiceModel::factory()->state(['status' => $status->value])->withProductLines()->create();
 
-        $this->mock(NotificationFacadeInterface::class)->shouldNotReceive('notify');
-
         $this->handle($invoice->id);
 
+        self::assertSame([], $this->notifier->sent);
         $this->assertStatus($invoice, $status);
     }
 
@@ -53,18 +58,15 @@ final class SendInvoiceNotificationJobTest extends TestCase
 
     public function test_handle_skips_unknown_invoice(): void
     {
-        $this->mock(NotificationFacadeInterface::class)->shouldNotReceive('notify');
-
         $this->handle(Uuid::uuid4()->toString());
+
+        self::assertSame([], $this->notifier->sent);
     }
 
     public function test_handle_lets_notification_errors_bubble_up_for_retry(): void
     {
         $invoice = InvoiceModel::factory()->sending()->withProductLines()->create();
-
-        $this->mock(NotificationFacadeInterface::class, static function (MockInterface $mock): void {
-            $mock->shouldReceive('notify')->once()->andThrow(new RuntimeException('Mail server down'));
-        });
+        $this->notifier->failTimes(1);
 
         try {
             $this->handle($invoice->id);

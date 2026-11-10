@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Modules\Invoices\Presentation\Http\Controllers;
 
 use Illuminate\Http\JsonResponse;
+use Modules\Invoices\Application\Queries\InvoiceQueryService;
 use Modules\Invoices\Application\Services\InvoiceService;
 use Modules\Invoices\Presentation\Http\Resources\InvoiceResource;
 use Ramsey\Uuid\Uuid;
@@ -14,12 +15,17 @@ final readonly class SendInvoiceController
 {
     public function __construct(
         private InvoiceService $invoiceService,
+        private InvoiceQueryService $invoiceQueries,
     ) {}
 
     public function __invoke(string $id): JsonResponse
     {
-        $invoice = $this->invoiceService->send(Uuid::fromString($id));
+        $invoiceId = Uuid::fromString($id);
 
-        return new InvoiceResource($invoice)->response()->setStatusCode(Response::HTTP_ACCEPTED);
+        $this->invoiceService->send($invoiceId);
+
+        return new InvoiceResource($this->invoiceQueries->get($invoiceId))
+            ->response()
+            ->setStatusCode(Response::HTTP_ACCEPTED);
     }
 }

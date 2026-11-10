@@ -11,6 +11,24 @@ use Tests\TestCase;
 
 final class DeliveryFlowTest extends TestCase
 {
+    public function test_invoice_goes_from_creation_to_sent_to_client_through_real_modules(): void
+    {
+        $id = $this->postJson(route('invoices.store'), [
+            'customer_name' => 'Jane Doe',
+            'customer_email' => 'jane@example.com',
+            'product_lines' => [['name' => 'Widget', 'quantity' => 2, 'unit_price' => 100]],
+        ])->assertCreated()->json('data.id');
+
+        $this->postJson(route('invoices.send', $id))->assertAccepted();
+        $this->artisan('invoices:relay-outbox')->expectsOutputToContain('Relayed 1')->assertSuccessful();
+        $this->deliver($id)->assertNoContent();
+
+        $this->getJson(route('invoices.show', $id))
+            ->assertJsonPath('data.status', 'sent-to-client')
+            ->assertJsonPath('data.total_price', 200);
+        $this->assertDatabaseMissing('invoice_outbox', ['dispatched_at' => null]);
+    }
+
     public function test_delivered_webhook_marks_sent_invoice_as_sent_to_client(): void
     {
         $id = $this->createInvoice();

@@ -55,6 +55,8 @@ final class CreateInvoiceControllerTest extends TestCase
     public static function invalidPayloads(): iterable
     {
         yield 'missing name' => [['customer_name' => ''], 'customer_name'];
+        yield 'name too long' => [['customer_name' => str_repeat('a', 256)], 'customer_name'];
+        yield 'product name too long' => [['product_lines' => [['name' => str_repeat('a', 256), 'quantity' => 1, 'unit_price' => 1]]], 'product_lines.0.name'];
         yield 'invalid email' => [['customer_email' => 'nope'], 'customer_email'];
         yield 'negative quantity' => [['product_lines' => [['name' => 'A', 'quantity' => -1, 'unit_price' => 1]]], 'product_lines.0.quantity'];
         yield 'fractional unit price' => [['product_lines' => [['name' => 'A', 'quantity' => 1, 'unit_price' => 1.5]]], 'product_lines.0.unit_price'];

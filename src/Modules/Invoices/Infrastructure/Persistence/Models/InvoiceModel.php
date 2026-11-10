@@ -17,6 +17,7 @@ use Illuminate\Support\Carbon;
  * @property string $customer_name
  * @property string $customer_email
  * @property string $status
+ * @property int $version
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  * @property-read Collection<int, ProductLineModel> $productLines
@@ -34,6 +35,13 @@ final class InvoiceModel extends Model
     protected $keyType = 'string';
 
     protected $guarded = [];
+
+    protected function casts(): array
+    {
+        return [
+            'version' => 'integer',
+        ];
+    }
 
     /** @return HasMany<ProductLineModel, $this> */
     public function productLines(): HasMany

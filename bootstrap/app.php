@@ -4,7 +4,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Http\Request;
-use Modules\Invoices\Application\Exceptions\InvoiceNotificationFailedException;
+use Modules\Invoices\Domain\Exceptions\ConcurrentModificationException;
 use Modules\Invoices\Domain\Exceptions\InvalidInvoiceException;
 use Modules\Invoices\Domain\Exceptions\InvalidStatusTransitionException;
 use Modules\Invoices\Domain\Exceptions\InvoiceNotFoundException;
@@ -26,7 +26,7 @@ return Application::configure(basePath: dirname(__DIR__))
             InvoiceNotFoundException::class,
             InvalidInvoiceException::class,
             InvalidStatusTransitionException::class,
-            InvoiceNotificationFailedException::class,
+            ConcurrentModificationException::class,
         ]);
         $exceptions->render(InvoiceExceptionRenderer::render(...));
     })->create();

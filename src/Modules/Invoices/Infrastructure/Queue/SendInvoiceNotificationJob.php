@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Modules\Invoices\Application\Jobs;
+namespace Modules\Invoices\Infrastructure\Queue;
 
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -29,7 +29,6 @@ final class SendInvoiceNotificationJob implements ShouldQueue
 
     public function failed(?Throwable $exception): void
     {
-        app(InvoiceService::class)
-            ->abandonSending(Uuid::fromString($this->invoiceId), $exception);
+        app(InvoiceService::class)->abandonSending(Uuid::fromString($this->invoiceId), $exception);
     }
 }

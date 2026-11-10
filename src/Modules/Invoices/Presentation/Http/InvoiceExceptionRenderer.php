@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Modules\Invoices\Presentation\Http;
 
 use Illuminate\Http\JsonResponse;
-use Modules\Invoices\Application\Exceptions\InvoiceNotificationFailedException;
+use Modules\Invoices\Domain\Exceptions\ConcurrentModificationException;
 use Modules\Invoices\Domain\Exceptions\InvalidInvoiceException;
 use Modules\Invoices\Domain\Exceptions\InvalidStatusTransitionException;
 use Modules\Invoices\Domain\Exceptions\InvoiceException;
@@ -18,9 +18,9 @@ final class InvoiceExceptionRenderer
     {
         $status = match (true) {
             $exception instanceof InvoiceNotFoundException => Response::HTTP_NOT_FOUND,
-            $exception instanceof InvalidStatusTransitionException => Response::HTTP_CONFLICT,
+            $exception instanceof InvalidStatusTransitionException,
+            $exception instanceof ConcurrentModificationException => Response::HTTP_CONFLICT,
             $exception instanceof InvalidInvoiceException => Response::HTTP_UNPROCESSABLE_ENTITY,
-            $exception instanceof InvoiceNotificationFailedException => Response::HTTP_SERVICE_UNAVAILABLE,
             default => Response::HTTP_INTERNAL_SERVER_ERROR,
         };
 
